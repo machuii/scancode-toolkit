@@ -41,12 +41,13 @@ class GemArchiveHandler(models.DatafileHandler):
     )
 
     @classmethod
-    def parse(cls, location):
+    def parse(cls, location, purl_only=False):
         metadata = extract_gem_metadata(location)
         metadata = saneyaml.load(metadata)
         yield build_rubygem_package_data(
             gem_data=metadata,
             datasource_id=cls.datasource_id,
+            purl_only=purl_only,
         )
 
 
@@ -84,13 +85,14 @@ class GemMetadataArchiveExtractedHandler(models.DatafileHandler):
     )
 
     @classmethod
-    def parse(cls, location):
+    def parse(cls, location, purl_only=False):
         with open(location, 'rb') as met:
             metadata = met.read()
         metadata = saneyaml.load(metadata)
         yield build_rubygem_package_data(
             gem_data=metadata,
             datasource_id=cls.datasource_id,
+            purl_only=purl_only,
         )
 
     @classmethod
@@ -129,7 +131,7 @@ class GemspecHandler(models.DatafileHandler):
     documentation_url = 'https://guides.rubygems.org/specification-reference/'
 
     @classmethod
-    def parse(cls, location):
+    def parse(cls, location, purl_only=False):
         gemspec = spec.parse_spec(
             location=location,
             package_type=cls.default_package_type,
@@ -137,6 +139,19 @@ class GemspecHandler(models.DatafileHandler):
 
         name = gemspec.get('name')
         version = gemspec.get('version')
+        dependencies = gemspec.get('dependencies') or []
+
+        package = models.PackageData(
+            datasource_id=cls.datasource_id,
+            type=cls.default_package_type,
+            name=name,
+            version=version,
+            dependencies=dependencies,
+        )
+        if purl_only:
+            yield package
+            return
+
         homepage_url = gemspec.get('homepage')
 
         description = build_description(
@@ -148,24 +163,22 @@ class GemspecHandler(models.DatafileHandler):
         extracted_license_statement = gemspec.get('license')
 
         parties = get_parties(gemspec)
-        dependencies = gemspec.get('dependencies') or []
 
-        urls = get_urls(name=name, version=version)
+        (
+            package.repository_homepage_url,
+            package.repository_download_url,
+            package.api_data_url,
+            package.download_url,
+        ) = get_urls(name=name, version=version)
 
-        yield models.PackageData(
-            datasource_id=cls.datasource_id,
-            type=cls.default_package_type,
-            name=name,
-            version=version,
-            parties=parties,
-            homepage_url=homepage_url,
-            vcs_url=vcs_url,
-            description=description,
-            extracted_license_statement=extracted_license_statement,
-            primary_language=cls.default_primary_language,
-            dependencies=dependencies,
-            **urls
-        )
+        package.parties = parties
+        package.homepage_url = homepage_url
+        package.vcs_url = vcs_url
+        package.description = description
+        package.extracted_license_statement = extracted_license_statement
+        package.primary_language = cls.default_primary_language
+
+        yield package
 
 class GemspecInExtractedGemHandler(GemspecHandler):
     datasource_id = 'gemspec_extracted'
@@ -234,7 +247,7 @@ class GemfileLockHandler(BaseGemProjectHandler):
     documentation_url = 'https://bundler.io/man/gemfile.5.html'
 
     @classmethod
-    def parse(cls, location):
+    def parse(cls, location, purl_only=False):
         gemfile_lock = GemfileLockParser(location)
         all_gems = list(gemfile_lock.all_gems.values())
         if not all_gems:
@@ -257,16 +270,25 @@ class GemfileLockHandler(BaseGemProjectHandler):
                 ) for dep in all_gems if dep != primary_gem
             ]
             urls = get_urls(primary_gem.name, primary_gem.version)
-
-            yield models.PackageData(
+            
+            package = models.PackageData(
                 datasource_id=cls.datasource_id,
-                primary_language=cls.default_primary_language,
                 type=cls.default_package_type,
                 name=primary_gem.name,
                 version=primary_gem.version,
                 dependencies=deps,
-                **urls
             )
+            if purl_only:
+                yield package
+            else:
+                (
+                    package.repository_homepage_url,
+                    package.repository_download_url,
+                    package.api_data_url,
+                    package.download_url,
+                ) = urls
+                package.primary_language = cls.default_primary_language
+                yield package
         else:
             deps = [
                 models.DependentPackage(
@@ -417,7 +439,7 @@ def extract_gem_metadata(location):
             fileutils.delete(extract_loc)
 
 
-def build_rubygem_package_data(gem_data, datasource_id):
+def build_rubygem_package_data(gem_data, datasource_id, purl_only=False):
     """
     Return a PackageData for ``datasource_id`` built from a Gem `gem_data`
     mapping or None. The ``gem_data`` can come from a .gemspec or .gem/metadata.
@@ -439,6 +461,17 @@ def build_rubygem_package_data(gem_data, datasource_id):
     else:
         qualifiers = {}
 
+    dependencies = get_dependencies(gem_data.get('dependencies'))
+
+    package_data = models.PackageData(
+        datasource_id=datasource_id,
+        type=GemArchiveHandler.default_package_type,
+        name=name,
+        version=version,
+        qualifiers=qualifiers,
+        dependencies=dependencies,
+    )
+
     description = build_description(
         summary=gem_data.get('summary'),
         description=gem_data.get('description'),
@@ -457,26 +490,21 @@ def build_rubygem_package_data(gem_data, datasource_id):
     if not homepage_url:
         homepage_url = gem_data.get('homepage')
 
-    urls = get_urls(name, version, platform)
-    dependencies = get_dependencies(gem_data.get('dependencies'))
+    (
+        package_data.repository_homepage_url,
+        package_data.repository_download_url,
+        package_data.api_data_url,
+        package_data.download_url,
+    ) = get_urls(name, version, platform)
     file_references = get_file_references(metadata.get('files'))
 
-    package_data = models.PackageData(
-        datasource_id=datasource_id,
-        type=GemArchiveHandler.default_package_type,
-        primary_language=GemArchiveHandler.default_primary_language,
-        name=name,
-        version=version,
-        qualifiers=qualifiers,
-        description=description,
-        homepage_url=homepage_url,
-        extracted_license_statement=extracted_license_statement,
-        bug_tracking_url=metadata.get('bug_tracking_uri'),
-        code_view_url=metadata.get('source_code_uri'),
-        file_references=file_references,
-        dependencies=dependencies,
-        **urls,
-    )
+    package_data.primary_language = GemArchiveHandler.default_primary_language
+    package_data.description = description
+    package_data.homepage_url = homepage_url
+    package_data.extracted_license_statement = extracted_license_statement
+    package_data.bug_tracking_url = metadata.get('bug_tracking_uri')
+    package_data.code_view_url = metadata.get('source_code_uri')
+    package_data.file_references = file_references
 
     # we can have one singular or a plural list of authors
     authors = gem_data.get('authors') or []

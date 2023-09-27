@@ -121,7 +121,7 @@ class EVR(namedtuple('EVR', 'epoch version release')):
 class BaseRpmInstalledDatabaseHandler(models.DatafileHandler):
 
     @classmethod
-    def parse(cls, location):
+    def parse(cls, location, purl_only=False):
         # we receive the location of the Package database file and we need to
         # scan the parent which is the directory that contains the rpmdb
         loc_path = Path(location)
@@ -133,6 +133,7 @@ class BaseRpmInstalledDatabaseHandler(models.DatafileHandler):
             location=xmlish_loc,
             datasource_id=cls.datasource_id,
             package_type=cls.default_package_type,
+            purl_only=purl_only,
         )
         # TODO: package_data.namespace = cls.default_package_namespace
         return package_data
@@ -272,7 +273,7 @@ class RpmArchiveHandler(models.DatafileHandler):
     documentation_url = 'https://en.wikipedia.org/wiki/RPM_Package_Manager'
 
     @classmethod
-    def parse(cls, location):
+    def parse(cls, location, purl_only=False):
         rpm_tags = get_rpm_tags(location, include_desc=True)
 
         if TRACE: logger_debug('recognize: rpm_tags', rpm_tags)
@@ -319,6 +320,18 @@ class RpmArchiveHandler(models.DatafileHandler):
             if TRACE: logger_debug('recognize: source_rpm', src_purl)
             source_packages = [src_purl]
 
+        package = models.PackageData(
+            datasource_id=cls.datasource_id,
+            type=cls.default_package_type,
+            # TODO: namespace=cls.default_package_namespace,
+            name=name,
+            version=evr,
+            source_packages=source_packages,
+        )
+        if purl_only:
+            yield package
+            return
+
         parties = []
 
         # TODO: also use me to craft a namespace!!!
@@ -335,13 +348,13 @@ class RpmArchiveHandler(models.DatafileHandler):
         if rpm_tags.vendor:
             parties.append(models.Party(name=rpm_tags.vendor, role='vendor'))
 
-        description = build_description(summary=rpm_tags.summary, description=rpm_tags.description)
+        package.description = build_description(summary=rpm_tags.summary, description=rpm_tags.description)
 
         if TRACE:
             data = dict(
                 name=name,
                 version=evr,
-                description=description or None,
+                description=package.description or None,
                 homepage_url=rpm_tags.url or None,
                 parties=parties,
                 extracted_license_statement=rpm_tags.license or None,
@@ -349,18 +362,9 @@ class RpmArchiveHandler(models.DatafileHandler):
             )
             logger_debug('recognize: data to create a package:\n', data)
 
-        package = models.PackageData(
-            datasource_id=cls.datasource_id,
-            type=cls.default_package_type,
-            # TODO: namespace=cls.default_package_namespace,
-            name=name,
-            version=evr,
-            description=description or None,
-            homepage_url=rpm_tags.url or None,
-            parties=parties,
-            extracted_license_statement=rpm_tags.license or None,
-            source_packages=source_packages,
-        )
+        package.homepage_url = rpm_tags.url or None
+        package.parties = parties
+        package.extracted_license_statement = rpm_tags.license or None
 
         if TRACE:
             logger_debug('recognize: created package:\n', package)

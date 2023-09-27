@@ -216,7 +216,7 @@ class PodspecHandler(BasePodHandler):
     documentation_url = 'https://guides.cocoapods.org/syntax/podspec.html'
 
     @classmethod
-    def parse(cls, location):
+    def parse(cls, location, purl_only=False):
         """
         Yield one or more Package manifest objects given a file ``location``
         pointing to a package archive, manifest or similar.
@@ -224,10 +224,24 @@ class PodspecHandler(BasePodHandler):
         podspec = spec.parse_spec(
             location=location,
             package_type=cls.default_package_type,
+            purl_only=purl_only,
         )
 
         name = podspec.get('name')
         version = podspec.get('version')
+        dependencies = podspec.get('dependencies')
+
+        pkg = models.PackageData(
+            datasource_id=cls.datasource_id,
+            type=cls.default_package_type,
+            name=name,
+            version=version,
+            dependencies=dependencies,
+        )
+        if purl_only:
+            yield pkg
+            return
+
         homepage_url = podspec.get('homepage')
         extracted_license_statement = podspec.get('license')
         summary = podspec.get('summary')
@@ -252,27 +266,27 @@ class PodspecHandler(BasePodHandler):
                 )
                 parties.append(party)
 
-        urls = get_urls(
+        (
+            pkg.repository_download_url,
+            pkg.repository_homepage_url,
+            pkg.code_view_url,
+            pkg.bug_tracking_url,
+            pkg.api_data_url,
+        ) = get_urls(
             name=name,
             version=version,
             homepage_url=homepage_url,
-            vcs_url=vcs_url)
-
-        yield models.PackageData(
-            datasource_id=cls.datasource_id,
-            type=cls.default_package_type,
-            name=name,
-            version=version,
-            primary_language=cls.default_primary_language,
             vcs_url=vcs_url,
-            # FIXME: a source should be a PURL, not a list of URLs
-            # source_packages=vcs_url.split('\n'),
-            description=description,
-            extracted_license_statement=extracted_license_statement,
-            homepage_url=homepage_url,
-            parties=parties,
-            **urls,
         )
+        pkg.primary_language = cls.default_primary_language
+        pkg.vcs_url = vcs_url
+        # FIXME: a source should be a PURL, not a list of URLs
+        # source_packages=vcs_url.split('\n'),
+        pkg.description = description
+        pkg.extracted_license_statement = extracted_license_statement
+        pkg.homepage_url = homepage_url
+        pkg.parties = parties
+        yield pkg
 
 
 class PodfileHandler(PodspecHandler):
@@ -293,7 +307,7 @@ class PodfileLockHandler(BasePodHandler):
     documentation_url = 'https://guides.cocoapods.org/using/the-podfile.html'
 
     @classmethod
-    def parse(cls, location):
+    def parse(cls, location, purl_only=False):
         """
         Yield PackageData from a YAML Podfile.lock.
         """
@@ -337,12 +351,14 @@ class PodfileLockHandler(BasePodHandler):
                     )
                 )
 
-        yield models.PackageData(
+        pkg = models.PackageData(
             datasource_id=cls.datasource_id,
             type=cls.default_package_type,
-            primary_language=cls.default_primary_language,
             dependencies=dependencies,
         )
+        if not purl_only:
+            pkg.primary_language = cls.default_primary_language
+        yield pkg
 
 
 class PodspecJsonHandler(models.DatafileHandler):
@@ -354,12 +370,27 @@ class PodspecJsonHandler(models.DatafileHandler):
     documentation_url = 'https://guides.cocoapods.org/syntax/podspec.html'
 
     @classmethod
-    def parse(cls, location):
+    def parse(cls, location, purl_only=False):
         with open(location) as psj:
             data = json.load(psj)
 
         name = data.get('name')
         version = data.get('version')
+        dependencies = data.get('dependencies', '')
+        if dependencies:
+            extra_data['dependencies'] = dependencies
+
+        pkg = models.PackageData(
+            datasource_id=cls.datasource_id,
+            primary_language=cls.default_primary_language,
+            type=cls.default_package_type,
+            name=name,
+            version=version,
+        )
+        if purl_only:
+            yield pkg
+            return
+
         summary = data.get('summary', '')
         description = data.get('description', '')
         homepage_url = data.get('homepage')
@@ -414,29 +445,25 @@ class PodspecJsonHandler(models.DatafileHandler):
 
         extra_data = {}
         extra_data['source'] = data['source']
-        dependencies = data.get('dependencies', '')
-        if dependencies:
-            extra_data['dependencies'] = dependencies
         extra_data['podspec.json'] = data
 
-        urls = get_urls(
-            name=name,
-            version=version, homepage_url=homepage_url, vcs_url=vcs_url)
-
-        yield models.PackageData(
-            datasource_id=cls.datasource_id,
-            primary_language=cls.default_primary_language,
-            type=cls.default_package_type,
+        (
+            pkg.repository_download_url,
+            pkg.repository_homepage_url,
+            pkg.code_view_url,
+            pkg.bug_tracking_url,
+            pkg.api_data_url,
+        ) = get_urls(
             name=name,
             version=version,
-            description=description,
-            extracted_license_statement=extracted_license_statement,
-            parties=parties,
-            vcs_url=vcs_url,
             homepage_url=homepage_url,
-            download_url=download_url,
-            **urls,
+            vcs_url=vcs_url,
         )
+        pkg.primary_language = cls.default_primary_language
+        pkg.description = description
+        pkg.extracted_license_statement = extracted_license_statement
+        pkg.parties = parties
+        yield pkg
 
 
 def get_urls(name=None, version=None, homepage_url=None, vcs_url=None, **kwargs):

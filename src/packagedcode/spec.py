@@ -120,9 +120,12 @@ def get_authors(line):
 
 
 # mapping of parser callable by its field name
-PARSER_BY_NAME = {
+PARSER_BY_NAME_PURL_ONLY = {
     'name': partial(get_value, name='name', matcher=parse_name),
     'version': partial(get_value, name='version', matcher=parse_version),
+}
+
+PARSER_BY_NAME_OTHERS = {
     'license': partial(get_value, name='license', matcher=parse_license),
     'summary': partial(get_value, name='summary', matcher=parse_summary),
     'description': partial(get_value, name='description', matcher=parse_description, clean=False),
@@ -133,7 +136,7 @@ PARSER_BY_NAME = {
 }
 
 
-def parse_spec(location, package_type):
+def parse_spec(location, package_type, purl_only=False):
     """
     Return a mapping of data parsed from a podspec/gemspec/Pofile/Gemfile file
     at ``location``. Use ``package_type`` a Package URL type for dependencies.
@@ -147,10 +150,27 @@ def parse_spec(location, package_type):
     for line in lines:
         line = pre_process(line)
 
-        for attribute_name, parser in PARSER_BY_NAME.items():
+        for attribute_name, parser in PARSER_BY_NAME_PURL_ONLY.items():
             parsed = parser(line=line)
             if parsed:
                 spec_data[attribute_name] = parsed
+        
+        if not purl_only:
+            for attribute_name, parser in PARSER_BY_NAME_PURL_ONLY.items():
+                parsed = parser(line=line)
+                if parsed:
+                    spec_data[attribute_name] = parsed
+
+    # We avoid reloading twice the file but we are still parsing twice: need to
+    # merge all in gemfileparser or write a better parser.
+    spec_data['dependencies'] = list(get_dependent_packages(
+        lines=lines,
+        location=location,
+        package_type=package_type,
+    ))
+
+    if purl_only:
+        return spec_data
 
     # description can be in single or multi-lines
     # There are many different ways to write description.
@@ -166,14 +186,6 @@ def parse_spec(location, package_type):
         else:
             # a single quoted description
             spec_data['description'] = get_cleaned_string(description)
-
-    # We avoid reloading twice the file but we are still parsing twice: need to
-    # merge all in gemfileparser or write a better parser.
-    spec_data['dependencies'] = list(get_dependent_packages(
-        lines=lines,
-        location=location,
-        package_type=package_type,
-    ))
 
     return spec_data
 
